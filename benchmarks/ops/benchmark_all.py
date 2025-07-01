@@ -365,12 +365,18 @@ def save_results(results: Dict, output_dir: str = "benchmark_results"):
     if HAS_PANDAS:
         df = pd.DataFrame(rows)
         df.to_csv(csv_path, index=False)
+        print(df.to_string(index=False))
     else:
+        # 手动写 CSV
+        fieldnames = ['seq_len'] + [f"{op}_{phase}" for op in operators for phase in ['fwd','bwd','total']]
         with open(csv_path, 'w', newline='') as f:
-            fieldnames = ['seq_len'] + [f"{op}_{phase}" for op in operators for phase in ['fwd', 'bwd', 'total']]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
+        # 终端打印制表
+        print('\t'.join(fieldnames))
+        for row in rows:
+            print('\t'.join(str(row.get(fn,'')) for fn in fieldnames))
     
     print(f"Results saved to: {csv_path}")
     
