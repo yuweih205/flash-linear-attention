@@ -337,54 +337,73 @@ def run_benchmarks(operators: Optional[List[str]] = None) -> Dict:
     
     return results
 
-def save_results(results: Dict, output_dir: str = "benchmark_results"):
-    """保存结果到文件"""
+def save_results(
+    results: Dict,
+    output_dir: str,
+    export_formats: List[str],    # 既然 argparse 已经给了默认，就不用 Optional 了
+) -> str:
+    """保存结果到文件，可选导出 CSV、Excel、终端打印表格"""
     os.makedirs(output_dir, exist_ok=True)
-    
+    csv_path   = os.path.join(output_dir, "benchmark_results.csv")
+    excel_path = os.path.join(output_dir, "benchmark_results.xlsx")
     # 准备数据
     seq_lens = sorted(SEQ_LENGTHS)
     operators = list(results.keys())
-    
-    # 创建CSV数据
     rows = []
     for seq_len in seq_lens:
-        row = {'seq_len': seq_len}
+        row = {"seq_len": seq_len}
         for op_name in operators:
             op_results = results[op_name]
-            fwd_time = op_results['forward'].get(seq_len, float('inf'))
-            bwd_time = op_results['backward'].get(seq_len, float('inf'))
-            
-            row[f"{op_name}_fwd"] = None if fwd_time == float('inf') else fwd_time
-            row[f"{op_name}_bwd"] = None if bwd_time == float('inf') else bwd_time
-            row[f"{op_name}_total"] = None if (fwd_time == float('inf') or bwd_time == float('inf')) else fwd_time + bwd_time
-        
+            fwd = op_results["forward"].get(seq_len, float("inf"))
+            bwd = op_results["backward"].get(seq_len, float("inf"))
+            row[f"{op_name}_fwd"]   = None if fwd == float("inf") else fwd
+            row[f"{op_name}_bwd"]   = None if bwd == float("inf") else bwd
+            row[f"{op_name}_total"] = None if (fwd==float("inf") or bwd==float("inf")) else fwd + bwd
         rows.append(row)
-    
-    # 保存CSV
-    csv_path = os.path.join(output_dir, 'benchmark_results_fixed.csv')
+
+    # pandas DataFrame
     if HAS_PANDAS:
         df = pd.DataFrame(rows)
-        df.to_csv(csv_path, index=False)
-        print(df.to_string(index=False))
+
+        if "csv" in export_formats:
+            df.to_csv(csv_path, index=False)
+            print(f"Saved CSV to {csv_path}")
+
+        if "xlsx" in export_formats:
+            try:
+                df.to_excel(excel_path, index=False)
+                print(f"Saved Excel to {excel_path}")
+            except ImportError:
+                print("Warning: can't export Excel—need openpyxl or xlsxwriter.")
+
+        if "console" in export_formats:
+            # 对齐打印
+            print(df.to_string(index=False))
+
     else:
-        # 手动写 CSV
-        fieldnames = ['seq_len'] + [f"{op}_{phase}" for op in operators for phase in ['fwd','bwd','total']]
-        with open(csv_path, 'w', newline='') as f:
+        # 纯 CSV，不支持 Excel
+        fieldnames = ["seq_len"] + [
+            f"{op}_{phase}" for op in operators for phase in ("fwd","bwd","total")
+        ]
+        csv_path = os.path.join(output_dir, "benchmark_results.csv")
+        with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
-        # 终端打印制表
-        print('\t'.join(fieldnames))
-        for row in rows:
-            print('\t'.join(str(row.get(fn,'')) for fn in fieldnames))
-    
-    print(f"Results saved to: {csv_path}")
-    
-    # 创建图表
+        print(f"Saved CSV to {csv_path}")
+
+        if "console" in export_formats:
+            # 终端制表
+            print("\t".join(fieldnames))
+            for row in rows:
+                print("\t".join(str(row.get(fn, "")) for fn in fieldnames))
+
+    # 如果你还要生成图表
     if HAS_PLOTTING:
         create_plots(results, output_dir)
-    
+
     return csv_path
+
 
 def create_plots(results: Dict, output_dir: str):
     """创建性能图表"""
@@ -491,13 +510,19 @@ def create_plots(results: Dict, output_dir: str):
         print(f"Failed to create plots: {e}")
 
 def main():
-    """主函数"""
     import argparse
     
     parser = argparse.ArgumentParser(description='Fixed Operator Benchmark')
     parser.add_argument('--operators', nargs='+', help='Specific operators to benchmark')
     parser.add_argument('--seq-lens', nargs='+', type=int, help='Specific sequence lengths to test')
     parser.add_argument('--output-dir', default='benchmark_results', help='Output directory for results')
+    parser.add_argument(
+        "--export-formats", "-e",
+        nargs="+",
+        choices=["csv","xlsx","console"],
+        default=["csv","console","xlsx"],
+        help="Which outputs to generate: csv, xlsx, console"
+    )    
     
     args = parser.parse_args()
     
@@ -511,10 +536,9 @@ def main():
         results = run_benchmarks(args.operators)
         
         # 保存结果
-        csv_path = save_results(results, args.output_dir)
+        save_results(results, output_dir=args.output_dir, export_formats=args.export_formats,)
         
         print(f"\nBenchmark completed successfully!")
-        print(f"Results saved to: {csv_path}")
         
     except Exception as e:
         print(f"Benchmark failed: {e}")
