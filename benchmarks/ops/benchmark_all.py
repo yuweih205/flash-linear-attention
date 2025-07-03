@@ -51,6 +51,7 @@ BATCH_SIZE = 4
 NUM_HEADS = 8
 HEAD_DIM = 128
 
+# 在此处新增算子名 需和真实调用算子名一致 并在后续create_tensors_for_operator匹配输入 
 STABLE_OPERATORS = [
     # ABC Family
     'chunk_abc',
@@ -74,12 +75,6 @@ STABLE_OPERATORS = [
     'chunk_gated_delta_rule',
 #    'fused_recurrent_gated_delta_rule',
     
-    # Generalized Delta Rule Family
-#    'chunk_dplr_delta_rule',
-#    'chunk_iplr_delta_rule',
-#    'fused_recurrent_dplr_delta_rule',
-#    'fused_recurrent_iplr_delta_rule',
-    
     # GLA Family
     'chunk_gla',
     'fused_chunk_gla',
@@ -102,9 +97,6 @@ STABLE_OPERATORS = [
     
     # NSA Family
     'parallel_nsa',
-    
-    # Path Attention Family
-    # 'parallel_path_attention',
     
     # Retention Family
     'chunk_retention',
@@ -205,15 +197,6 @@ def create_tensors_for_operator(operator_name: str, seq_len: int) -> Tuple[torch
         indices = indices.sort(-1)[0]
         return (q, k, v, None, None, None, indices, block_counts, block_size)
     
-    elif operator_name == 'parallel_path_attention':
-        return (q, k, v)
-    
-    elif operator_name == 'chunk_retention' or operator_name.startswith('fused_chunk_retention') or operator_name.startswith('fused_recurrent_retention') or operator_name.startswith('parallel_retention'):
-        return (q, k, v)
-    
-    elif operator_name == 'chunk_linear_attn' or operator_name.startswith('fused_chunk_linear_attn') or operator_name.startswith('fused_recurrent_linear_attn'):
-        return (q, k, v)
-    
     elif operator_name == 'fused_chunk_based' or operator_name.startswith('parallel_based'):
         # fused_chunk_based 需要特殊的张量布局和维度
         if operator_name == 'fused_chunk_based':
@@ -226,13 +209,6 @@ def create_tensors_for_operator(operator_name: str, seq_len: int) -> Tuple[torch
             q = torch.randn(BATCH_SIZE, seq_len, NUM_HEADS, HEAD_DIM, device=device, dtype=dtype, requires_grad=True)
             k = torch.randn(BATCH_SIZE, seq_len, NUM_HEADS, HEAD_DIM, device=device, dtype=dtype, requires_grad=True)
             v = torch.randn(BATCH_SIZE, seq_len, NUM_HEADS, HEAD_DIM, device=device, dtype=dtype, requires_grad=True)
-        return (q, k, v)
-    
-    elif operator_name == 'parallel_attn':
-        return (q, k, v)
-
-    elif operator_name.startswith('chunk_dplr_delta_rule') or operator_name.startswith('chunk_iplr_delta_rule') or operator_name.startswith('fused_recurrent_dplr_delta_rule') or operator_name.startswith('fused_recurrent_iplr_delta_rule'):
-        # 这些算子可能需要特殊参数，暂时用基础参数
         return (q, k, v)
     
     else:
@@ -337,73 +313,72 @@ def run_benchmarks(operators: Optional[List[str]] = None) -> Dict:
     
     return results
 
-def save_results(
-    results: Dict,
-    output_dir: str,
-    export_formats: List[str],    # 既然 argparse 已经给了默认，就不用 Optional 了
-) -> str:
-    """保存结果到文件，可选导出 CSV、Excel、终端打印表格"""
+def save_results(results: Dict, output_dir: str, export_formats: List[str]) -> str:
     os.makedirs(output_dir, exist_ok=True)
-    csv_path   = os.path.join(output_dir, "benchmark_results.csv")
+    csv_path = os.path.join(output_dir, "benchmark_results.csv")
     excel_path = os.path.join(output_dir, "benchmark_results.xlsx")
-    # 准备数据
+
     seq_lens = sorted(SEQ_LENGTHS)
     operators = list(results.keys())
+    fieldnames = ["seq_len"] + [f"{op}_{phase}" for op in operators for phase in ("fwd", "bwd", "total")]
+
     rows = []
     for seq_len in seq_lens:
         row = {"seq_len": seq_len}
-        for op_name in operators:
-            op_results = results[op_name]
-            fwd = op_results["forward"].get(seq_len, float("inf"))
-            bwd = op_results["backward"].get(seq_len, float("inf"))
-            row[f"{op_name}_fwd"]   = None if fwd == float("inf") else fwd
-            row[f"{op_name}_bwd"]   = None if bwd == float("inf") else bwd
-            row[f"{op_name}_total"] = None if (fwd==float("inf") or bwd==float("inf")) else fwd + bwd
+        for op in operators:
+            fwd = results[op]["forward"].get(seq_len, float("inf"))
+            bwd = results[op]["backward"].get(seq_len, float("inf"))
+            row[f"{op}_fwd"] = None if fwd == float("inf") else fwd
+            row[f"{op}_bwd"] = None if bwd == float("inf") else bwd
+            row[f"{op}_total"] = None if (fwd == float("inf") or bwd == float("inf")) else fwd + bwd
         rows.append(row)
 
-    # pandas DataFrame
-    if HAS_PANDAS:
-        df = pd.DataFrame(rows)
-
-        if "csv" in export_formats:
-            df.to_csv(csv_path, index=False)
-            print(f"Saved CSV to {csv_path}")
-
-        if "xlsx" in export_formats:
-            try:
-                df.to_excel(excel_path, index=False)
-                print(f"Saved Excel to {excel_path}")
-            except ImportError:
-                print("Warning: can't export Excel—need openpyxl or xlsxwriter.")
-
-        if "console" in export_formats:
-            # 对齐打印
-            print(df.to_string(index=False))
-
-    else:
-        # 纯 CSV，不支持 Excel
-        fieldnames = ["seq_len"] + [
-            f"{op}_{phase}" for op in operators for phase in ("fwd","bwd","total")
-        ]
-        csv_path = os.path.join(output_dir, "benchmark_results.csv")
+    # 写入 CSV（可选）
+    if "csv" in export_formats:
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
         print(f"Saved CSV to {csv_path}")
+    else:
+        csv_path = None  # 不导出就返回 None
 
-        if "console" in export_formats:
-            # 终端制表
-            print("\t".join(fieldnames))
-            for row in rows:
-                print("\t".join(str(row.get(fn, "")) for fn in fieldnames))
+    # 写入 Excel（可选）
+    if HAS_PANDAS and "xlsx" in export_formats:
+        df = pd.DataFrame(rows)
+        try:
+            df.to_excel(excel_path, index=False)
+            print(f"Saved Excel to {excel_path}")
+        except ImportError:
+            print("Warning: can't export Excel—need openpyxl or xlsxwriter.")
 
-    # 如果你还要生成图表
+    # 控制台打印（可选）
+    if "console" in export_formats:
+        print("\nConsole Output (15 columns per page):")
+        if HAS_PANDAS:
+            df = pd.DataFrame(rows)
+            cols = df.columns.tolist()
+        else:
+            df = rows
+            cols = fieldnames
+
+        base_col = ["seq_len"]
+        op_cols = [col for col in cols if col != "seq_len"]
+        for i in range(0, len(op_cols), 15):
+            sub_cols = base_col + op_cols[i:i + 15]
+            if HAS_PANDAS:
+                print(df[sub_cols].to_string(index=False))
+            else:
+                print("\t".join(sub_cols))
+                for row in rows:
+                    print("\t".join(str(row.get(col, "")) for col in sub_cols))
+            print("\n" + "-" * 100)
+
+    # 绘图（可选）
     if HAS_PLOTTING:
         create_plots(results, output_dir)
 
-    return csv_path
-
+    return csv_path or ""
 
 def create_plots(results: Dict, output_dir: str):
     """创建性能图表"""
@@ -513,8 +488,8 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='Fixed Operator Benchmark')
-    parser.add_argument('--operators', nargs='+', help='Specific operators to benchmark')
-    parser.add_argument('--seq-lens', nargs='+', type=int, help='Specific sequence lengths to test')
+    parser.add_argument('--operators',"-op", nargs='+', help='Specific operators to benchmark')
+    parser.add_argument('--seq-lens', "-T", nargs='+', type=int, help='Specific sequence lengths to test')
     parser.add_argument('--output-dir', default='benchmark_results', help='Output directory for results')
     parser.add_argument(
         "--export-formats", "-e",
